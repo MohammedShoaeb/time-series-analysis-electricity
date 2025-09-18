@@ -1,0 +1,588 @@
+import pandas as pd
+import numpy as np
+import statsmodels.api as sm
+import matplotlib.pyplot as plt
+import seaborn as sns
+import pmdarima as pm
+from pmdarima.arima import auto_arima
+import warnings
+warnings.filterwarnings("ignore")
+from statsmodels.tsa.stattools import adfuller
+from statsmodels.tsa.seasonal import seasonal_decompose
+from statsmodels.graphics.tsaplots import plot_acf, plot_pacf
+from statsmodels.tsa.arima.model import ARIMA
+from statsmodels.stats.diagnostic import acorr_ljungbox
+from statsmodels.tsa.statespace.sarimax import SARIMAX
+from sklearn.metrics import mean_absolute_percentage_error, mean_squared_error, r2_score, mean_absolute_error
+from sklearn.preprocessing import PolynomialFeatures
+from sklearn.linear_model import LinearRegression
+from sklearn.pipeline import make_pipeline
+# Dataset Path
+file_path="C:\\Users\\moham\\Desktop\\Electric_Production.csv"
+# Load dataset
+df = pd.read_csv(file_path)
+# Convert DATE column to datetime and set it as index
+df['DATE'] = pd.to_datetime(df['DATE'])
+df.set_index('DATE', inplace=True)
+# Keep only the electricity production column
+df = df['EP']
+# Preview the data
+print(df.head())
+print(df.info()) # Check for basic information about the dataset (number of rows, columns, datatypes)
+
+
+plt.figure(figsize=(12, 5))
+plt.plot(df, label='Electricity Production')
+plt.title('Monthly Electricity Production Over Time')
+plt.xlabel('Date')
+plt.ylabel('Electricity Production (EP)')
+plt.legend()
+plt.grid(True)
+plt.show()
+
+#----Handling Missing Values:----#
+
+# Check for missing values
+print(f"Number of missing values: {df.isnull().sum()}")
+#---- Handling Outliers ----#
+# Calculate IQR (Interquartile Range) for outlier detection
+Q1 = df.quantile(0.25)
+Q3 = df.quantile(0.75)
+IQR = Q3 - Q1
+# Define the outlier boundaries
+lower_bound = Q1 - 1.5 * IQR
+upper_bound = Q3 + 1.5 * IQR
+# Filter out outliers
+df_clean = df[(df >= lower_bound) & (df <= upper_bound)]
+# Show the number of outliers removed
+outliers_removed = len(df) - len(df_clean)
+print(f'Number of outliers removed: {outliers_removed}')
+#########################################################################
+#---- Handling Duplicated values ----#
+
+# Check for duplicate rows in the dataset
+duplicate_rows = df.duplicated().sum()
+# Print the message along with the number of duplicate rows
+print(f"Number of duplicate rows: {duplicate_rows}")
+# Remove duplicate rows if any
+df = df.drop_duplicates()
+# Compare the original and cleaned data visually
+plt.figure(figsize=(12, 6))
+plt.subplot(1, 2, 1)
+plt.plot(df, label='Original Data')
+plt.title('Original Data')
+plt.xlabel('Date')
+plt.ylabel('EP')
+plt.subplot(1, 2, 2)
+plt.plot(df_clean, label='Cleaned Data', color='orange')
+plt.title('Data After Removing Outliers')
+plt.xlabel('Date')
+plt.ylabel('EP')
+plt.tight_layout()
+plt.show()
+# Create a new DataFrame for regression modeling
+df_reg = df.copy().to_frame()  # Ensure df is converted from Series to DataFrame
+
+# Time-based feature extraction
+df_reg['Month'] = df_reg.index.month
+df_reg['Year'] = df_reg.index.year
+df_reg['Quarter'] = df_reg.index.quarter
+df_reg['TimeIndex'] = np.arange(len(df_reg)) # Trend feature (e.g., simple index over time)
+# Cyclical encoding of Month
+df_reg['Month_sin'] = np.sin(2 * np.pi * df_reg['Month'] / 12)
+df_reg['Month_cos'] = np.cos(2 * np.pi * df_reg['Month'] / 12)
+
+# Preview the updated dataset
+df_reg.head()
+# Descriptive statistics
+desc_stats = df.describe()
+skewness = df.skew()
+kurtosis = df.kurt()
+
+# Display all together
+print("Descriptive Statistics:")
+print(desc_stats)
+print("\nSkewness:", skewness)
+print("Kurtosis:", kurtosis)# 1-Histogram with KDE
+plt.figure(figsize=(12, 5))
+sns.histplot(df, bins=30, kde=True, color='skyblue')
+plt.title('Distribution of Electricity Production')
+plt.xlabel('Electricity Production (EP)')
+plt.ylabel('Frequency')
+plt.grid(True)
+plt.show()
+
+# 2-Box Plot
+plt.figure(figsize=(12, 5))
+sns.boxplot(x=df, color='orange')
+plt.title('Boxplot of Electricity Production')
+plt.xlabel('Electricity Production (EP)')
+plt.grid(True)
+plt.show()
+
+# 3-Rolling Mean and Standard Deviation
+
+fig, ax1 = plt.subplots(figsize=(12, 5))
+
+# Compute rolling mean and rolling standard deviation (12-month window)
+rolling_mean = df.rolling(window=12).mean()
+rolling_std = df.rolling(window=12).std()
+ax1.plot(df, label='Original', color='gray')
+ax1.plot(rolling_mean, label='Rolling Mean (12 months)', color='blue')
+ax1.set_ylabel('Electricity Production')
+ax1.set_xlabel('Date')
+
+# Create second y-axis for rolling std dev
+ax2 = ax1.twinx()
+ax2.plot(rolling_std, label='Rolling Std Dev (12 months)', color='red', linestyle='--')
+ax2.set_ylabel('Rolling Std Dev')
+
+# Combine legends
+lines, labels = ax1.get_legend_handles_labels()
+lines2, labels2 = ax2.get_legend_handles_labels()
+ax1.legend(lines + lines2, labels + labels2, loc='upper left')
+plt.title('Rolling Mean and Standard Deviation (12 months)')
+plt.grid(True)
+plt.show()
+
+# Perform additive decomposition
+decomposition = seasonal_decompose(df, model='additive', period=12)
+
+# Plot the decomposition
+plt.rcParams.update({'figure.figsize': (12, 10)})
+decomposition.plot()
+plt.suptitle('Seasonal Decomposition (Additive Model)', fontsize=16)
+plt.tight_layout()
+plt.show()
+
+
+# 1. Line Plot: Trend over time
+plt.figure(figsize=(10, 6))
+plt.plot(df, label='Electricity Production', color='b')
+plt.title('Electricity Production Trend Over Time')
+plt.xlabel('Date')
+plt.ylabel('Consumption (EP)')
+plt.legend()
+plt.grid(True)
+plt.show()
+
+# 2. Histogram and Box Plot: Distribution of the target variable
+plt.figure(figsize=(10, 6))
+
+# Histogram
+plt.subplot(1, 2, 1)
+plt.hist(df, bins=30, color='g', edgecolor='black')
+plt.title('Histogram of Electricity Production')
+plt.xlabel('Consumption (EP)')
+plt.ylabel('Frequency')
+
+# Box Plot
+plt.subplot(1, 2, 2)
+sns.boxplot(x=df, color='orange')
+plt.title('Box Plot of Electricity Production')
+
+plt.tight_layout()
+plt.show()
+
+# 3. Correlation Heatmap 
+plt.figure(figsize=(10, 8))
+sns.heatmap(df_reg.corr(), annot=True, cmap='coolwarm', linewidths=0.5)
+plt.title('Correlation Heatmap of Features')
+plt.show()#stationary check 
+def adf_test(series):
+    result = adfuller(series)
+    print(f'ADF Statistic: {result[0]}')
+    print(f'p-value: {result[1]}')
+    print(f'Critical Values: {result[4]}')
+
+# Original series ADF test
+print("Original Series ADF Test:")
+adf_test(df)# Differenced series ADF test
+diff_df = df.diff().dropna()
+print("\nDifferenced Series ADF Test:")
+adf_test(diff_df)plot_acf(diff_df, lags=50,)
+plt.show()
+plt.tight_layout()
+
+plot_acf(df, lags=50,)
+plt.show()
+plt.tight_layout()
+
+# Define the split point (80% train, 20% test)
+split_index = int(len(df) * 0.80)
+
+# Split the data for ARIMA (train-test)
+train_arima = diff_df.iloc[:split_index]
+test_arima = diff_df.iloc[split_index:]
+
+
+# AutoARIMA to find the best ARIMA parameters
+auto_arima_model = pm.auto_arima(train_arima, seasonal=True, m=12, stepwise=True, trace=True)
+
+
+# Get the best ARIMA parameters from AutoARIMA
+print("Best ARIMA parameters from AutoARIMA:")
+print(auto_arima_model.summary())
+
+# Extract the ARIMA parameters
+p, d, q = auto_arima_model.order  # (p, d, q)
+P, D, Q, s = auto_arima_model.seasonal_order  # (P, D, Q, s)
+
+# Display the selected parameters
+print(f"ARIMA(p, d, q) = ({p}, {d}, {q})")
+print(f"SARIMA(P, D, Q, s) = ({P}, {D}, {Q}, {s})")# plotting diagnostics to evaluate model assumptions and residual behavior
+auto_arima_model.plot_diagnostics(figsize=(15,8))  
+plt.show()
+# Fit ARIMA model with parameters from AutoARIMA
+arima_model = ARIMA(train_arima, order=(p, d, q))
+arima_fit = arima_model.fit()
+
+# Forecast the future values
+arima_forecast = arima_fit.forecast(steps=len(test_arima))
+
+# Plot the forecasted vs actual values
+plt.figure(figsize=(10, 6))
+plt.plot(test_arima.index, test_arima, label='Actual', color='blue')
+plt.plot(test_arima.index, arima_forecast, label='ARIMA Forecast', color='red')
+plt.legend()
+plt.title('ARIMA Forecast vs Actual')
+plt.show()
+
+# Restore the differenced training data to original scale
+train_arima_original = df.iloc[:len(train_arima)].iloc[0] + train_arima.cumsum()
+
+# Restore the differenced test data to original scale
+test_arima_original = train_arima_original.iloc[-1] + test_arima.cumsum()
+
+# Restore the ARIMA forecast to original scale
+arima_forecast_original = train_arima_original.iloc[-1] + arima_forecast.cumsum()
+
+# Plot the full dataset vs restored training, test, and forecasted values
+plt.figure(figsize=(12, 6))
+
+plt.plot(df.index, df, label='Original Data', color='black', alpha=0.6)  # Full original dataset
+plt.plot(train_arima_original.index, train_arima_original, label='Training Set (Restored)', color='blue')
+plt.plot(test_arima_original.index, test_arima_original, label='Test Set (Restored)', color='green')
+plt.plot(test_arima_original.index, arima_forecast_original, label='ARIMA Forecast (Restored)', color='red')
+
+plt.legend()
+plt.title('Original Data vs Train, Test, and Forecasted Values')
+plt.xlabel('Time')
+plt.ylabel('Values')
+plt.show()
+# Forecast next 24 months (2 years)
+forecast_steps = 24
+future_forecast_diff = arima_fit.forecast(steps=forecast_steps)
+
+# Get the last actual value from the original data (not differenced)
+last_actual = df.iloc[-1]
+
+# Restore forecast by cumulative summing and adding the last known actual
+future_forecast = last_actual + future_forecast_diff.cumsum()
+# Create monthly date range for the next 24 months
+last_date = df.index[-1]
+future_dates = pd.date_range(start=last_date + pd.DateOffset(months=1), periods=forecast_steps, freq='MS')
+future_forecast.index = future_dates
+plt.figure(figsize=(12, 6))
+
+plt.plot(df.index, df, label='Original Data', color='black')
+plt.plot(future_forecast.index, future_forecast, label='2-Year Forecast', color='orange')
+
+plt.title('2-Year Forecast Using ARIMA')
+plt.xlabel('Date')
+plt.ylabel('EP')
+plt.legend()
+plt.grid(True)
+plt.show()
+
+# Fit SARIMA model with parameters from AutoARIMA
+sarima_model = SARIMAX(train_arima,
+                       order=(p,d, q),  # Non-seasonal ARIMA parameters
+                       seasonal_order=(P, D, Q, s))  # Seasonal parameters (P, D, Q, s)
+
+sarima_fit = sarima_model.fit(disp=False)
+
+# Forecast the future values
+sarima_forecast = sarima_fit.forecast(steps=len(test_arima))
+
+# Plot the forecasted vs actual values
+plt.figure(figsize=(10, 6))
+plt.plot(test_arima.index, test_arima, label='Actual', color='blue')
+plt.plot(test_arima.index, sarima_forecast, label='SARIMA Forecast', color='green')
+plt.legend()
+plt.title('SARIMA Forecast vs Actual')
+plt.show()
+sarima_forecast_original = train_arima_original.iloc[-1] + sarima_forecast.cumsum()
+plt.figure(figsize=(14, 7))
+
+# Original time series
+plt.plot(df.index, df, label='Original Data', color='black', alpha=0.5)
+
+
+
+# Restored SARIMA forecasts
+plt.plot(test_arima_original.index, sarima_forecast_original, label='SARIMA Forecast (Restored)', color='purple', linestyle='--')
+
+plt.title('Original Data vs Train, Test, and Forecasted Values')
+plt.xlabel('Date')
+plt.ylabel('EP')
+plt.legend()
+plt.grid(True)
+plt.tight_layout()
+plt.show()
+future_steps = 24  # 2 years of monthly data
+sarima_future_diff = sarima_fit.forecast(steps=future_steps)
+# Start from the last value of the original time series
+last_value_sarima = df.iloc[-1]
+sarima_future = last_value_sarima + sarima_future_diff.cumsum()
+last_date = df.index[-1]
+future_dates = pd.date_range(start=last_date + pd.DateOffset(months=1), periods=future_steps, freq='MS')
+sarima_future.index = future_dates
+plt.figure(figsize=(14, 7))
+
+# Plot original series
+plt.plot(df.index, df, label='Original Data', color='black', alpha=0.5)
+
+# Future SARIMA forecast
+plt.plot(sarima_future.index, sarima_future, label='SARIMA Future Forecast', color='purple', linestyle='--')
+
+
+plt.title('SARIMA: Historical and 2-Year Forecast')
+plt.xlabel('Date')
+plt.ylabel('EP')
+plt.legend()
+plt.grid(True)
+plt.tight_layout()
+plt.show()
+# Generate lag features before splitting
+for lag in range(1, 13):  # 12 months
+    df_reg[f'EP_lag_{lag}'] = df_reg['EP'].shift(lag)
+# Drop NaN values (first 12 rows will have missing values)
+df_reg.dropna(inplace=True)
+# Proceed with train-test split
+train_size = int(len(df_reg) * 0.75)
+train_reg = df_reg.iloc[:train_size]
+test_reg = df_reg.iloc[train_size:]
+# Define features (include lag variables now)
+features = ['TimeIndex', 'Month',
+            'Quarter', 'Month_sin', 
+            'Month_cos']+ [f'EP_lag_{lag}' for lag in range(1, 13)]
+
+target = 'EP'
+# Prepare training and testing sets
+X_train = train_reg[features]
+y_train = train_reg[target]
+X_test = test_reg[features]
+y_test = test_reg[target]
+
+# Fit the Linear Regression model
+lin_reg = LinearRegression()
+lin_reg.fit(X_train, y_train)
+
+# Predict on the test set
+y_pred = lin_reg.predict(X_test)
+
+
+plt.figure(figsize=(10, 5))
+plt.plot(y_test.index, y_test, label='Actual', marker='o', linestyle='-')
+plt.plot(y_test.index, y_pred, label='Predicted', marker='s', linestyle='--')
+plt.title("Linear Regression: Actual vs Predicted")
+plt.xlabel("Date")
+plt.ylabel("EP")
+plt.legend()
+plt.grid(True)
+plt.show()
+
+residuals = y_test - y_pred
+plt.figure(figsize=(10, 5))
+plt.plot(y_test.index, residuals, marker='x', linestyle='-', color='red')
+plt.axhline(0, color='black', linestyle='--')
+plt.title("Residuals Over Time")
+plt.xlabel("Date")
+plt.ylabel("Residual (Actual - Predicted)")
+plt.grid(True)
+plt.show()
+last_date = df_reg.index[-1]
+last_time_index = df_reg['TimeIndex'].iloc[-1]
+future_steps = 24
+future_dates = pd.date_range(start=last_date + pd.DateOffset(months=1), periods=future_steps, freq='MS')
+
+# Create a DataFrame for future features
+future_df = pd.DataFrame(index=future_dates)
+future_df['TimeIndex'] = range(last_time_index + 1, last_time_index + future_steps + 1)
+future_df['Month'] = future_df.index.month
+future_df['Quarter'] = future_df.index.quarter
+future_df['Month_sin'] = np.sin(2 * np.pi * future_df['Month'] / 12)
+future_df['Month_cos'] = np.cos(2 * np.pi * future_df['Month'] / 12)
+# Get last 12 months of actual EP values
+last_12_ep = df_reg['EP'].iloc[-12:].values.tolist()
+
+# For each future row, generate lags based on previous predictions
+future_ep = []
+
+for i in range(future_steps):
+    lag_features = last_12_ep[-12:]  # Take the last 12 values
+    feature_row = {
+        'TimeIndex': future_df['TimeIndex'].iloc[i],
+        'Month': future_df['Month'].iloc[i],
+        'Quarter': future_df['Quarter'].iloc[i],
+        'Month_sin': future_df['Month_sin'].iloc[i],
+        'Month_cos': future_df['Month_cos'].iloc[i]
+    }
+    for j in range(12):
+        feature_row[f'EP_lag_{j+1}'] = lag_features[-(j+1)]
+    # Convert to DataFrame
+    X_future = pd.DataFrame([feature_row])
+    pred = lin_reg.predict(X_future)[0]
+    future_ep.append(pred)
+    last_12_ep.append(pred)  # Append prediction to the list for future lags
+future_forecast_reg = pd.Series(future_ep, index=future_dates)
+plt.figure(figsize=(14, 6))
+plt.plot(df.index, df, label='Original Data', color='black')
+plt.plot(future_forecast_reg.index, future_forecast_reg, label='Regression 2-Year Forecast', color='orange', linestyle='--')
+
+plt.title('Linear Regression Forecast: Next 2 Years')
+plt.xlabel('Date')
+plt.ylabel('EP')
+plt.grid(True)
+plt.legend()
+plt.tight_layout()
+plt.show()
+
+# Separate features and target
+X_train = train_reg[features]
+X_test = test_reg[features]
+y_train = train_reg[df.name]
+y_test = test_reg[df.name]
+# Create pipeline for polynomial regression (degree 2)
+poly_model = make_pipeline(PolynomialFeatures(degree=2), LinearRegression())
+# Fit the model
+poly_model.fit(X_train, y_train)
+
+# Predict
+y_pred_poly = poly_model.predict(X_test)
+
+
+# Create a figure
+plt.figure(figsize=(10, 5))
+
+# Plot actual values
+plt.plot(y_test.index, y_test, label='Actual', marker='o', linestyle='-')
+
+# Plot polynomial regression predictions
+plt.plot(y_test.index, y_pred_poly, label='Predicted (Polynomial)', marker='s', linestyle='--')
+
+# Formatting
+plt.title("Polynomial Regression: Actual vs Predicted")
+plt.xlabel("Date")
+plt.ylabel("EP")
+plt.legend()
+plt.grid(True)
+
+# Show the plot
+plt.show()
+
+residuals_poly = y_test - y_pred_poly
+
+plt.figure(figsize=(10, 5))
+plt.plot(y_test.index, residuals_poly, marker='x', linestyle='-', color='red')
+plt.axhline(0, color='black', linestyle='--')
+
+plt.title("Polynomial Regression Residuals Over Time")
+plt.xlabel("Date")
+plt.ylabel("Residual (Actual - Predicted)")
+plt.grid(True)
+plt.show()
+
+
+# ---- Polynomial Regression Coefficients Section ----
+
+poly_features = poly_model.named_steps['polynomialfeatures']
+poly_reg      = poly_model.named_steps['linearregression']
+
+feature_names = poly_features.get_feature_names_out(input_features=features)
+
+coef_df = pd.DataFrame({
+    'Feature':     feature_names,
+    'Coefficient': poly_reg.coef_
+})
+
+intercept_df = pd.DataFrame([['Intercept', poly_reg.intercept_]],
+                            columns=coef_df.columns)
+
+# Concatenate and print
+coef_df = pd.concat([intercept_df, coef_df], ignore_index=True)
+print(coef_df)
+
+print("Train features:", X_train.shape)
+print("Test features:", X_test.shape)
+# Create an empty dataframe to store the results
+results_df = pd.DataFrame(columns=['Model', 'MPE', 'MAPE', 'RMSE', 'R²'])
+
+# Function to add model results to the table
+def add_results(model_name, mpe, mape, rmse, r2):
+    global results_df
+    new_row = pd.DataFrame({
+        'Model': [model_name],
+        'MPE': [mpe],
+        'MAPE': [mape],
+        'RMSE': [rmse],
+        'R²': [r2]
+    })
+    results_df = pd.concat([results_df, new_row], ignore_index=True)
+
+# ---- ARIMA Evaluation ----
+arima_forecast = arima_fit.forecast(steps=len(test_arima))
+
+# ARIMA Metrics
+mpe_arima = np.mean((test_arima - arima_forecast) / test_arima) * 100
+mape_arima = mean_absolute_percentage_error(test_arima, arima_forecast) * 100
+rmse_arima = np.sqrt(mean_squared_error(test_arima, arima_forecast))
+r2_arima = r2_score(test_arima, arima_forecast)
+
+# Add ARIMA results to the table
+add_results("ARIMA", mpe_arima, mape_arima, rmse_arima, r2_arima)
+
+# ---- SARIMA Evaluation ----
+sarima_forecast = sarima_fit.forecast(steps=len(test_arima))
+
+# SARIMA Metrics
+mpe_sarima = np.mean((test_arima - sarima_forecast) / test_arima) * 100
+mape_sarima = mean_absolute_percentage_error(test_arima, sarima_forecast) * 100
+rmse_sarima = np.sqrt(mean_squared_error(test_arima, sarima_forecast))
+r2_sarima = r2_score(test_arima, sarima_forecast)
+
+# Add SARIMA results to the table
+add_results("SARIMA", mpe_sarima, mape_sarima, rmse_sarima, r2_sarima)
+
+# ---- Linear Regression Evaluation ----
+y_pred_linear = lin_reg.predict(X_test)
+
+# Linear Regression Metrics
+mpe_linear = np.mean((y_test - y_pred_linear) / y_test) * 100
+mape_linear = mean_absolute_percentage_error(y_test, y_pred_linear) * 100
+rmse_linear = np.sqrt(mean_squared_error(y_test, y_pred_linear))
+r2_linear = r2_score(y_test, y_pred_linear)
+
+# Add Linear Regression results to the table
+add_results("Linear Regression", mpe_linear, mape_linear, rmse_linear, r2_linear)
+
+# ---- Polynomial Regression Evaluation ----
+y_pred_poly = poly_model.predict(X_test)
+
+# Polynomial Regression Metrics
+mpe_poly = np.mean((y_test - y_pred_poly) / y_test) * 100
+mape_poly = mean_absolute_percentage_error(y_test, y_pred_poly) * 100
+rmse_poly = np.sqrt(mean_squared_error(y_test, y_pred_poly))
+r2_poly = r2_score(y_test, y_pred_poly)
+
+# Add Polynomial Regression results to the table
+add_results("Polynomial Regression", mpe_poly, mape_poly, rmse_poly, r2_poly)
+
+# ---- Display the Evaluation Table ----
+print(results_df)
+
+
+
+
+
